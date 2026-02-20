@@ -1,0 +1,19 @@
+{
+    "name": "browser-client-example",
+    "description": "description",
+    "type": "module",
+    "authors": "author",
+    "version": "1.0.0",
+    "main": "pathToMain",
+    "scripts": {
+        "build": "esbuild src/index.ts --bundle --metafile=meta.json --outfile=out.js"
+    },
+    "dependencies": {
+        "@ag-ui/client": "workspace:*"
+    },
+    "devDependencies": {
+        "esbuild": "0.27.3",
+        "rollup-plugin-visualizer": "7.0.0",
+        "typescript": "^5"
+    }
+}
