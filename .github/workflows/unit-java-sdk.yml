@@ -12,6 +12,9 @@ on:
       - "sdks/community/java/**"
       - ".github/workflows/unit-java-sdk.yml"
 
+permissions:
+  contents: read
+
 jobs:
   java:
     runs-on: ubuntu-latest
@@ -21,6 +24,11 @@ jobs:
         working-directory: sdks/community/java
 
     steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@5ef0c079ce82195b2a36a210272d6b661572d83e # v2.14.2
+        with:
+          egress-policy: audit
+
       - name: Checkout code
         uses: actions/checkout@v4
 
