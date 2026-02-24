@@ -12,11 +12,19 @@ on:
       - "sdks/community/kotlin/**"
       - ".github/workflows/unit-kotlin-sdk.yml"
 
+permissions:
+  contents: read
+
 jobs:
   kotlin:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@5ef0c079ce82195b2a36a210272d6b661572d83e # v2.14.2
+        with:
+          egress-policy: audit
+
       - name: Checkout code
         uses: actions/checkout@v4
 
@@ -27,7 +35,7 @@ jobs:
           distribution: "temurin"
 
       - name: Setup Gradle
-        uses: gradle/gradle-build-action@v3
+        uses: gradle/gradle-build-action@ac2d340dc04d9e1113182899e983b5400c17cda1 # v3.5.0
 
       - name: Run JVM tests
         working-directory: sdks/community/kotlin/library
