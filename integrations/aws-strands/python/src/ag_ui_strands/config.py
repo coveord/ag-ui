@@ -48,6 +48,17 @@ StateFromResult = Callable[[ToolResultContext], Awaitable[Optional[StatePayload]
 CustomResultHandler = Callable[[ToolResultContext], AsyncIterator[Any]]
 StateContextBuilder = Callable[[RunAgentInput, str], str]
 SessionManagerProvider = Callable[[RunAgentInput], Awaitable[Optional[SessionManager]] | Optional[SessionManager]]
+ToolStreamEventHandler = Callable[[str, Any], AsyncIterator[Any]]
+"""Handler for raw tool_stream_event data emitted by async-generator tools.
+
+Called with (tool_use_id: str, stream_data: Any) for every intermediate event
+yielded by the tool while it is executing. The handler may yield zero or more
+AG-UI Event objects which are forwarded directly into the top-level event stream.
+
+When a handler is registered for a tool, the default behaviour of emitting a
+StateSnapshotEvent for ``{"state": ...}`` payloads is suppressed for that tool.
+The handler is responsible for any state updates it wants to emit.
+"""
 
 
 @dataclass
