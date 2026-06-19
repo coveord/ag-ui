@@ -1348,6 +1348,14 @@ class StrandsAgent:
                                         call_info = _data
                                         break
                             tool_name = call_info.get("name")
+                            # Resume path: the tool was announced by the model in a
+                            # previous request (before the interrupt), so it never
+                            # appears in this request's tool_calls_seen. Recover the
+                            # name from the assistant tool-call carried in the incoming
+                            # message history.
+                            if not tool_name:
+                                tool_name = _tool_call_id_to_name.get(result_tool_id)
+
                             tool_args = call_info.get("args")
                             tool_input = call_info.get("input")
                             behavior = (
