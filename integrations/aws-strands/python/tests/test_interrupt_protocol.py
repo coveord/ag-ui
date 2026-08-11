@@ -137,7 +137,7 @@ def _run_input(
         thread_id=thread_id,
         run_id="r1",
         state={},
-        messages=messages or [UserMessage(id="u1", content="hello")],
+        messages=messages if messages is not None else [UserMessage(id="u1", content="hello")],
         tools=tools or [],
         context=[],
         forwarded_props={},
@@ -425,23 +425,95 @@ class TestResumeCancelled:
             tool_behaviors={"my_tool": ToolBehavior(interrupt_on_call=True)}
         )
 
-    async def test_cancelled_resume_ends_cleanly(self):
+    async def test_cancelled_resume_ends_cleanly_without_invoking_model(self):
         strands_interrupt = _make_strands_interrupt("my_tool", {}, "st-1")
         interrupt_state = _make_interrupt_state(
             activated=True,
             interrupts={strands_interrupt.id: strands_interrupt},
         )
+        received_prompts: list = []
+
+        async def _capture_stream(prompt: Any):
+            received_prompts.append(prompt)
+            yield {"result": _FakeAgentResult(stop_reason="end_turn")}
 
         agent = _build_agent(self.THREAD, [], self._config(), interrupt_state)
+        agent._pending_interrupts_by_thread[self.THREAD] = {
+            strands_interrupt.id: Interrupt(
+                id=strands_interrupt.id,
+                reason="tool_call",
+                tool_call_id="st-1",
+            )
+        }
+        agent._agents_by_thread[self.THREAD].stream_async = _capture_stream
 
         resume_input = _run_input(
             self.THREAD,
+            messages=[],
             resume=[ResumeEntry(interrupt_id=strands_interrupt.id, status="cancelled")],
         )
         events = await _collect(agent, resume_input)
 
+        assert received_prompts == []
+        cancelled_results = [e for e in events if e.type == EventType.TOOL_CALL_RESULT]
+        assert len(cancelled_results) == 1
+        assert cancelled_results[0].tool_call_id == "st-1"
+        assert cancelled_results[0].content == "Tool call cancelled by user."
+
         errors = [e for e in events if e.type == EventType.RUN_ERROR]
         assert len(errors) == 0
+
+        finished = [e for e in events if e.type == EventType.RUN_FINISHED]
+        assert len(finished) == 1
+        assert isinstance(finished[0].outcome, RunFinishedSuccessOutcome)
+
+    async def test_cancelled_resume_with_fresh_user_text_invokes_model_after_cancellation(self):
+        strands_interrupt = _make_strands_interrupt("my_tool", {}, "st-1")
+        interrupt_state = _make_interrupt_state(
+            activated=True,
+            interrupts={strands_interrupt.id: strands_interrupt},
+        )
+        received_prompts: list = []
+
+        async def _capture_stream(prompt: Any):
+            received_prompts.append(prompt)
+            yield {"data": "The current status is active."}
+            yield {"result": _FakeAgentResult(stop_reason="end_turn")}
+
+        agent = _build_agent(self.THREAD + "-continue", [], self._config(), interrupt_state)
+        agent._pending_interrupts_by_thread[self.THREAD + "-continue"] = {
+            strands_interrupt.id: Interrupt(
+                id=strands_interrupt.id,
+                reason="tool_call",
+                tool_call_id="st-1",
+            )
+        }
+        agent._agents_by_thread[self.THREAD + "-continue"].stream_async = _capture_stream
+
+        events = await _collect(
+            agent,
+            _run_input(
+                self.THREAD + "-continue",
+                messages=[UserMessage(id="u2", content="What is the current status?")],
+                resume=[ResumeEntry(interrupt_id=strands_interrupt.id, status="cancelled")],
+            ),
+        )
+
+        assert received_prompts == ["What is the current status?"]
+        assert interrupt_state.deactivate.call_count == 1
+        assert interrupt_state.activated is False
+
+        cancelled_result_index = next(
+            index for index, event in enumerate(events)
+            if event.type == EventType.TOOL_CALL_RESULT
+        )
+        text_content_index = next(
+            index for index, event in enumerate(events)
+            if event.type == EventType.TEXT_MESSAGE_CONTENT
+        )
+        assert cancelled_result_index < text_content_index
+        assert events[cancelled_result_index].tool_call_id == "st-1"
+        assert events[text_content_index].delta == "The current status is active."
 
         finished = [e for e in events if e.type == EventType.RUN_FINISHED]
         assert len(finished) == 1

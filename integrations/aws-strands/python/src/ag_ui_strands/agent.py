@@ -124,6 +124,20 @@ def _coerce_id(value: Any) -> str:
     return value if isinstance(value, str) and value else str(uuid.uuid4())
 
 
+def _has_actionable_user_message(messages: List[Any]) -> bool:
+    """Whether this request appends non-blank user text after an interrupt."""
+    if not messages:
+        return False
+
+    latest_message = messages[-1]
+    if getattr(latest_message, "role", None) != "user":
+        return False
+
+    content = getattr(latest_message, "content", "")
+    text = content if isinstance(content, str) else flatten_content_to_text(content)
+    return bool(text and text.strip())
+
+
 def _build_snapshot_messages(input_messages: List[Any]) -> List[Any]:
     """Convert ``RunAgentInput.messages`` to AG-UI message objects.
 
@@ -736,40 +750,50 @@ class StrandsAgent:
                             content="Tool call cancelled by user.",
                         )
 
-            # If ALL entries are cancelled, finish immediately without invoking Strands
+            # All-cancelled resumes abandon the interrupted tool call. Continue through
+            # the normal path only when this request also appends fresh user text;
+            # a cancellation-only resume remains a clean terminal acknowledgement.
             if all(e.status == "cancelled" for e in resume_entries):
                 interrupt_state.deactivate()
-                yield RunStartedEvent(
-                    type=EventType.RUN_STARTED,
-                    thread_id=input_data.thread_id,
-                    run_id=input_data.run_id,
-                )
-                yield RunFinishedEvent(
-                    type=EventType.RUN_FINISHED,
-                    thread_id=input_data.thread_id,
-                    run_id=input_data.run_id,
-                    outcome=RunFinishedSuccessOutcome(type="success"),
-                )
-                fingerprint = hashlib.md5(  # noqa: S324
-                    json.dumps(
-                        [(e.interrupt_id, e.status, e.payload) for e in resume_entries],
-                        sort_keys=True, default=str,
-                    ).encode(),
-                    usedforsecurity=False,
-                ).hexdigest()
-                self._last_resume_fingerprint[thread_id] = fingerprint
                 self._pending_interrupts_by_thread.pop(thread_id, None)
-                return
+                if not _has_actionable_user_message(input_data.messages):
+                    yield RunStartedEvent(
+                        type=EventType.RUN_STARTED,
+                        thread_id=input_data.thread_id,
+                        run_id=input_data.run_id,
+                    )
+                    yield RunFinishedEvent(
+                        type=EventType.RUN_FINISHED,
+                        thread_id=input_data.thread_id,
+                        run_id=input_data.run_id,
+                        outcome=RunFinishedSuccessOutcome(type="success"),
+                    )
+                    fingerprint = hashlib.md5(  # noqa: S324
+                        json.dumps(
+                            [(e.interrupt_id, e.status, e.payload) for e in resume_entries],
+                            sort_keys=True, default=str,
+                        ).encode(),
+                        usedforsecurity=False,
+                    ).hexdigest()
+                    self._last_resume_fingerprint[thread_id] = fingerprint
+                    return
 
-            # Pass interruptResponse dicts as the prompt — Strands resumes from
-            # its checkpoint without replaying the full conversation.
-            logger.debug(
-                f"Resuming interrupted run: thread_id={input_data.thread_id}, "
-                f"interrupt_responses={interrupt_responses}"
-            )
-            _resume_prompt: list | None = interrupt_responses
+                # The interrupt is no longer active, so invoke the model with the
+                # fresh user message rather than resuming Strands' checkpoint.
+                # Its tool-call ID must not select the tool-result continuation
+                # prompt below, because this run intentionally abandons that call.
+                _resumed_tool_call_ids.clear()
+                _resume_prompt = None
+            else:
+                # Pass interruptResponse dicts as the prompt — Strands resumes from
+                # its checkpoint without replaying the full conversation.
+                logger.debug(
+                    f"Resuming interrupted run: thread_id={input_data.thread_id}, "
+                    f"interrupt_responses={interrupt_responses}"
+                )
+                _resume_prompt: list | None = interrupt_responses
+                self._pending_interrupts_by_thread.pop(thread_id, None)
             # Fingerprint is stored after successful processing (below).
-            self._pending_interrupts_by_thread.pop(thread_id, None)
 
         # ── Start run ─────────────────────────────────────────────────────
         # Start run
